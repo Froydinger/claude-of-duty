@@ -90,6 +90,9 @@
     width: min(720px, 92vw); display: flex; flex-direction: column;
     align-items: center; gap: 28px;
   }
+  #blocker:has(#multiplayer-menu[open]) .fe-content { max-height: calc(100dvh - 48px); overflow-y: auto; flex-shrink: 0; }
+  #multiplayer-menu p { margin: 8px 0; font-size: 14px; }
+  #multiplayer-menu input { max-width: 100%; box-sizing: border-box; }
   .fe-wordmark {
     margin: 0; font-size: clamp(26px, 4.6vw, 56px); line-height: 1; font-weight: 600;
     letter-spacing: .32em; text-indent: .32em; color: #f2f8ff;
@@ -503,13 +506,21 @@
       <div class="fe-start-foot">
         <p class="fe-prompt">Click to play</p>
         <button type="button" class="fe-btn" data-action="class">Create a class</button>
-        <p class="fe-count" id="fe-count" hidden></p>
+        <details id="multiplayer-menu"><summary class="fe-btn">Multiplayer</summary>
+<details id="mp-advanced"><summary>Advanced: custom server</summary><label>Room server <input id="mp-server" type="url" placeholder="https://your-room-worker.workers.dev"></label></details>
+<label>Room code <input id="mp-code" maxlength="16" placeholder="Choose a code, e.g. FRIENDS"></label><p>Host: choose a code or leave blank to generate one. Guests: enter the host’s code.</p>
+<button class="fe-btn" id="mp-create" type="button">Create Room</button>
+<button class="fe-btn" id="mp-join" type="button">Join Room</button>
+<button class="fe-btn" id="mp-leave" type="button">Back to main menu</button>
+<p id="mp-status" role="status">Uses the shared online server. Share your room code with a friend.</p></details>
+<p class="fe-count" id="fe-count" hidden></p>
       </div>
     </div>
     <div class="fe-pause">
       <h2 class="fe-heading">Paused</h2>
       <div class="fe-buttons">
         <button type="button" class="fe-btn" data-action="resume">Resume</button>
+        <button type="button" class="fe-btn" id="mp-pause-leave">Leave room / Single player</button>
         <button type="button" class="fe-btn" data-action="class">Create a class</button>
         <button type="button" class="fe-btn" data-action="respawn">Respawn</button>
         <button type="button" class="fe-btn" data-action="navmesh">Navmesh overlay</button>
@@ -643,6 +654,9 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { ROOM_SERVER_URL } from './multiplayer-config.js';
+import { MultiplayerClient } from './multiplayer-client.js';
+import { MultiplayerAvatars } from './multiplayer-avatars.js';
 import { PlayerController } from './player-controller.js';
 import { loadNavigation } from './navigation.js';
 import { Viewmodel } from './viewmodel.js';
@@ -1272,6 +1286,46 @@ let navigationVisible = false;
 let collisionVisible = false;
 let pathPoints = 0;
 let enemies = null;
+let multiplayerAvatars = null;
+const multiplayer = new MultiplayerClient(client => {
+  document.getElementById('mp-status').textContent = client.status === 'error'
+    ? client.error
+    : client.active ? client.status + ' · Room ' + client.code + (client.status === 'connected' ? ' · Click to play' : '')
+    : client.status === 'offline' ? 'Single player · Create or join a room on the shared online server.' : client.status;
+});
+const serverInput = document.getElementById('mp-server');
+const localGame = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+let savedRoomServer = '';
+try { savedRoomServer = localStorage.getItem('cod:room-server') || ''; } catch {}
+if (!localGame && /^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(savedRoomServer)) savedRoomServer = '';
+serverInput.value = savedRoomServer || (localGame ? 'http://localhost:8787' : ROOM_SERVER_URL);
+async function enterRoom(create) {
+  if (!ready || !enemies) return;
+  try {
+    try { localStorage.setItem('cod:room-server', serverInput.value.trim()); } catch {}
+    const connected = await multiplayer.connect(serverInput.value, document.getElementById('mp-code').value, create);
+    if (!connected) return;
+    document.getElementById('mp-code').value = multiplayer.code;
+    match.reset();
+    playerHealth.respawn();
+  } catch (error) { document.getElementById('mp-status').textContent = error.message; }
+}
+function leaveRoom(event) {
+  event?.stopPropagation();
+  const wasInRoom = multiplayer.active;
+  multiplayer.leave();
+  suspendPlay();
+  if (wasInRoom) { enemies?.setEnabled(true); restartMatch(); }
+  frontend.returnToTitle();
+  document.getElementById('mp-code').value = '';
+  document.getElementById('multiplayer-menu').open = true;
+}
+document.getElementById('multiplayer-menu').addEventListener('click', event => event.stopPropagation());
+document.getElementById('mp-create').onclick = () => enterRoom(true);
+document.getElementById('mp-join').onclick = () => enterRoom(false);
+document.getElementById('mp-leave').onclick = leaveRoom;
+document.getElementById('mp-pause-leave').onclick = leaveRoom;
+window.addEventListener('pagehide', () => multiplayer.leave());
 let playerHealth = null;
 let hitmarkerLife = 0;
 let hitmarkerMaxLife = 0.18;
@@ -1580,6 +1634,12 @@ function restartMatch() {
 }
 
 function renderMatchUi() {
+  if (multiplayer.active) {
+    matchStatus.textContent = 'Room ' + multiplayer.code + ' · ' + multiplayer.status + ' · ' + (multiplayer.peers.size + 1) + '/2 · Movement only';
+    scoreboard.classList.remove('visible');
+    killfeed.replaceChildren();
+    return;
+  }
   const state = match.getState();
   const playerEntry = state.standings.find((entry) => entry.id === 'player');
   const minutes = Math.floor(state.remainingSeconds / 60);
@@ -1745,6 +1805,7 @@ function showHitmarker(kind) {
 }
 
 function fireShot({ triggerShotCount = 0 } = {}) {
+  if (multiplayer.active) return;
   const intro = activeWeaponSlot.definition.initialShotCount > 0 && triggerShotCount === 1;
   if (!viewmodel.fire({ intro })) return;
   if (playerHealth?.protectionTimer > 0) playerHealth.protectionTimer = 0;
@@ -1830,6 +1891,12 @@ function getDebugState() {
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   return {
     ready,
+    multiplayer: { ...multiplayer.getState(), bots: {
+      active: enemies?.enemies.length ?? 0,
+      hitTargets: enemies?.hitTargets.length ?? 0,
+      attachedRoots: [...(enemies?.enemies ?? []), ...(enemies?.suspendedEnemies ?? [])].filter(enemy => enemy.root.parent !== null).length,
+      agents: [...(enemies?.enemies ?? []), ...(enemies?.suspendedEnemies ?? [])].filter(enemy => enemy.agent).length,
+    } },
     active: locked,
     paused: automationPaused,
     input: { touch: touchControls.getState(), mouseCaptureFallback },
@@ -1933,6 +2000,7 @@ function getDebugState() {
 function createDebugApi() {
   return {
     getState: getDebugState,
+    disconnectMultiplayer() { multiplayer.socket?.close(4000, 'Connection interrupted'); },
     setGraphicsPreset,
     // Exercise the post-match shell without waiting for the five-minute clock.
     finishMatch() {
@@ -2368,15 +2436,27 @@ function tick() {
     crouch: Boolean(keys.ControlLeft || keys.ControlRight || keys.KeyC || touch.crouch),
     jump: Boolean(keys.Space || touch.jump),
   };
-  weapon.setTrigger(controlsActive && (mouseFire || touch.fire));
+  weapon.setTrigger(!multiplayer.active && controlsActive && (mouseFire || touch.fire));
   viewmodel.setAiming(controlsActive && (mouseAim || touch.aim));
   if (player && simulationActive) {
     player.update(dt, controlsActive ? movement : {});
   }
   if (simulationActive) navigation?.update(1 / 60, dt, 5);
-  enemies?.update(dt, { active: simulationActive });
+  if (enemies) {
+    enemies.setEnabled(!multiplayer.active);
+    if (!multiplayer.active) enemies.update(dt, { active: simulationActive });
+    multiplayerAvatars ??= new MultiplayerAvatars(scene, enemies);
+    multiplayerAvatars.update(multiplayer, dt);
+  }
+  if (player && multiplayer.active) {
+    const forward = camera.getWorldDirection(new THREE.Vector3());
+    multiplayer.send({ position: player.feetPosition.toArray(), yaw: Math.atan2(-forward.x, -forward.z),
+      moving: Math.hypot(player.velocity.x, player.velocity.z) > 5,
+      sprint: !!movement.sprint, crouch: !!player.crouched, grounded: !!player.isGrounded,
+      weapon: activeWeaponSlot.definition.id });
+  }
   playerHealth?.update(simulationActive ? dt : 0);
-  if (simulationActive) match.update(dt);
+  if (simulationActive && !multiplayer.active) match.update(dt);
   weaponEffects.update(dt);
   // Panned enemy fire is only meaningful while the listener tracks the camera.
   if (simulationActive) weaponEffects.updateListener(camera);

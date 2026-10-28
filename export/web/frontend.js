@@ -328,6 +328,14 @@ export class Frontend {
     return true;
   }
 
+  returnToTitle() {
+    if (!this.complete) return false;
+    this.playing = false;
+    this.screen = 'title';
+    this.render();
+    return true;
+  }
+
   /** Compact, serializable view for the debug API and smoke tests. */
   getState() {
     return {

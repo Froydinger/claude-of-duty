@@ -1,0 +1,8 @@
+{
+  "name": "claude-of-duty-rooms",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-01",
+  "vars": { "ALLOWED_ORIGINS": "http://localhost:8000,http://127.0.0.1:8000,https://silver-lining-43.github.io" },
+  "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "Room" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }]
+}

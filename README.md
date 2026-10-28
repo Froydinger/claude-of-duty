@@ -318,6 +318,106 @@ rather than the original engine collision.
 
 ## Tests
 
+## Multiplayer foundation (movement only)
+
+Single-player remains the default, with the original six AI bots and combat.
+Open **Multiplayer** on the title screen. Everyone uses the shared server at
+https://claude-of-duty-rooms.jasonngeckert.workers.dev by default: visitors do
+not need to fork this project, host a server or create a Cloudflare account.
+That address hosts many independent rooms, with two players per room.
+The operator maintains the server and its hosting account.
+
+Enter a code such as FRIENDS and choose **Create Room**. Codes allow 3–16 letters,
+numbers or hyphens and ignore letter case. Leave the field blank to generate a
+code instead. If a code already exists, join it or choose another one; creating
+never replaces an existing room. Share the code and game link with your friend,
+who enters the same code and chooses **Join Room**. Once connected, click to play.
+The **Advanced: custom server** section is optional, for developers or alternate
+hosts. Codes identify rooms within the selected server, not across all servers.
+
+**Back to main menu** leaves a room and restores single-player bots. From a bot
+match, it opens the menu without respawning the player. Multiplayer removes bots
+from the scene, navigation crowd, radar and hit-target lists entirely; shared
+character assets remain available to render humans. Rooms disable shooting and
+the match clock. The status bar shows the room code and connection status.
+
+GitHub Pages hosts the game files; the separate Worker hosts online rooms.
+Deploy the updated Worker and frontend together when enabling chosen room codes.
+The older Worker only generates random codes; the client reports if that server
+needs updating rather than silently using a different code.
+
+Local development (Node 22+, Chrome or Edge):
+
+```powershell
+npm ci
+npm run mp:dev
+# In a second terminal:
+python -m http.server 8000 --directory export/web
+# Open http://localhost:8000 in two browsers; room server is http://localhost:8787
+npm run test:multiplayer
+```
+
+The multiplayer test starts its own frontend on port 8000 and a local Worker on
+8788; stop a manually running frontend first. It drives two isolated Playwright
+browser contexts through the real game and saves screenshots and state under
+`artifacts/multiplayer`. Set `BROWSER_PATH` if Chrome/Edge is installed elsewhere.
+For two computers on a LAN, bind the frontend and Worker to the LAN interface,
+add the frontend's exact origin to `server/wrangler.jsonc` `ALLOWED_ORIGINS`, and
+use the host's LAN address for both URLs. Allow the ports through the local firewall.
+
+### Cloudflare room backend (manual deployment)
+
+The backend is a separate Worker; GitHub Pages continues serving static files.
+No backend is deployed by installing dependencies, running tests, or opening a PR.
+
+1. In `server/wrangler.jsonc`, choose a unique Worker name and set
+   `ALLOWED_ORIGINS` to the exact frontend origins you intend to allow (no paths).
+   The fork's GitHub Pages origin is included as an example.
+2. Authenticate with `npx wrangler login` using your Cloudflare account.
+3. When ready to deploy yourself, run
+   `npx wrangler deploy --config server/wrangler.jsonc`.
+   The SQLite Durable Object migration provisions the room namespace.
+4. Optionally set `ROOM_SERVER_URL` in `export/web/multiplayer-config.js` to the
+   deployed server origin before publishing the frontend, so players do not need
+   to enter it themselves. The input can still override it.
+5. Enter the resulting `https://…workers.dev` URL in the Multiplayer menu on
+   each computer. The URL is remembered locally. HTTPS frontends require an
+   HTTPS backend; the client derives the secure WebSocket URL automatically.
+
+The Worker uses the [Durable Object WebSocket hibernation API](https://developers.cloudflare.com/durable-objects/best-practices/websockets/).
+Room existence expires after 30 minutes without movement/heartbeat traffic;
+alarms evict stale sockets and remove expired empty room storage. Open clients
+send state at 20 Hz even when paused. Reconnect retries every 1.5 seconds with
+the same per-session token; full/expired/invalid rooms report an error and stop
+retrying. Reloading the page requires joining again. Background tab throttling
+may disconnect a client, which rejoins when its timers resume.
+
+### Protocol and next stage
+
+`POST /rooms` accepts an optional `{code}` JSON body (sent as text/plain to avoid
+a browser preflight), or generates a random room code; `GET /rooms/CODE?token=UUID` upgrades
+to WebSocket. Protocol v1 supports server `welcome`, `state`, and `leave`
+messages and client `{v:1,type:'state',seq,state}` messages only. State carries
+feet position, yaw, moving/sprint/crouch/grounded flags and weapon ID. The server
+assigns identity from the session, bounds and validates state, rejects old
+sequences, limits payloads and update frequency, and enforces room capacity.
+It does not trust a client-supplied peer ID. Origin restrictions are not account
+authentication; room codes are invitation secrets for this prototype.
+
+The dedicated client buffers snapshots with a 100 ms interpolation delay and
+shortest-arc rotation. Render-only actors clone the bots' PLA rig and reuse its
+standing/run clips and calibrated M27 weapon attachment. Sprint changes animation
+speed, crouch compresses the rig, and jumps follow networked feet height. Weapon
+selection is synchronized, while all remote weapons use the shared M27 world
+model in this milestone. Dedicated crouch/jump clips and per-weapon world art
+remain follow-up work.
+
+Movement is client-authoritative in v1: there is no anti-cheat or server physics.
+Combat packets are rejected. The room manager is the future authority boundary:
+add input/shot commands, server ticks, hit validation, health/respawn events and
+score snapshots there, rather than allowing clients to publish damage or kills.
+Remote actors are intentionally absent from local bot hit targets.
+
 Run fast collision and navmesh tests with:
 
 ```powershell
